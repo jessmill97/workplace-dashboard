@@ -1,0 +1,1249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>ACCUBOT — Accurx Workplace</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback, useMemo } = React;
+
+// ══════════════════════════════════════════════════════════════════
+// CONFIG — all API calls go through Netlify Functions (/api/*)
+// API keys live in Netlify environment variables, never in this file
+// ══════════════════════════════════════════════════════════════════
+const API = {
+  CLAUDE: "/api/claude",   // Netlify Function → Anthropic
+  ROOMS:  "/api/rooms",    // Netlify Function → Google Calendar freebusy
+  MENU:   "/api/menu",     // Netlify Function → Google Sheet (via Zapier)
+};
+
+const REFRESH_SECONDS = 120; // auto-refresh interval
+
+// ── DESIGN TOKENS ─────────────────────────────────────────────────
+const PINE="#0B8888", MID="#5E5E80", CORAL="#F27357", BLUE="#5757DD";
+const BG="#F0F2F4", BDR="#E4E8EC", TXT="#0F1923", TXTM="#5E6E80", TXTL="#9AAABB";
+const GREEN="#16a34a", AMBER="#D97706";
+const FONT="'Outfit',system-ui,sans-serif";
+const CAT={Company:{bg:"#E6F5F5",c:PINE},Learning:{bg:"#EEEEFF",c:BLUE},Social:{bg:"#FFF8E6",c:"#8B5E00"},External:{bg:"#FFF0EC",c:"#9B3820"}};
+const TFL_LINES=[
+  {id:"elizabeth",        name:"Elizabeth",  color:"#6950A1"},
+  {id:"central",          name:"Central",    color:"#DC241F"},
+  {id:"northern",         name:"Northern",   color:"#000000"},
+  {id:"overground",       name:"Overground", color:"#EF7B10"},
+  {id:"circle",           name:"Circle",     color:"#FFD329"},
+  {id:"hammersmith-city", name:"H&C",        color:"#F3A9BB"},
+];
+
+const STYLE=`
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap');
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:${FONT};background:${BG};-webkit-font-smoothing:antialiased;}
+a{color:inherit;text-decoration:none;}
+@keyframes tick{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
+.ticker{display:inline-block;white-space:nowrap;animation:tick 50s linear infinite;}
+.ticker:hover{animation-play-state:paused;}
+@keyframes fi{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+.fi{animation:fi .28s ease forwards;}
+@keyframes pu{0%,100%{opacity:1}50%{opacity:.5}}
+.ld{animation:pu 2s ease-in-out infinite;}
+@keyframes sp{to{transform:rotate(360deg)}}
+.sp{animation:sp .8s linear infinite;}
+@keyframes cursor-blink{0%,100%{opacity:1}50%{opacity:0}}
+.streaming-cursor::after{content:"▋";display:inline-block;animation:cursor-blink .7s ease infinite;color:${PINE};margin-left:2px;}
+@keyframes slideIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+.slide-in{animation:slideIn .2s ease forwards;}
+@keyframes fadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+::-webkit-scrollbar{width:5px;height:5px;}
+::-webkit-scrollbar-thumb{background:#D1D9E0;border-radius:99px;}
+.nav{display:flex;align-items:center;gap:10px;padding:10px 13px;border-radius:10px;cursor:pointer;transition:background .15s,color .15s;font-size:13.5px;font-weight:500;color:${TXTM};}
+.nav:hover{background:#F0F4F4;color:${PINE};}
+.nav.on{background:#E6F5F5;color:${PINE};font-weight:600;}
+.card{background:#fff;border:1px solid ${BDR};border-radius:16px;padding:20px;}
+.lbl{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.09em;color:${TXTL};margin-bottom:12px;}
+.chip{padding:6px 13px;border-radius:20px;font-size:12px;font-weight:600;cursor:pointer;border:1.5px solid ${BDR};background:#fff;color:${TXTM};font-family:${FONT};transition:all .15s;white-space:nowrap;}
+.chip:hover,.chip.on{border-color:${PINE};color:${PINE};background:#E6F5F5;}
+.ci{outline:none;border:none;background:transparent;font-family:${FONT};font-size:14px;color:${TXT};width:100%;resize:none;line-height:1.6;}
+.ci::placeholder{color:${TXTL};}
+.focus-ring:focus-within{border-color:${PINE}!important;box-shadow:0 0 0 3px ${PINE}18!important;}
+.room-card{border-radius:12px;padding:14px;cursor:pointer;transition:all .18s ease;border:1.5px solid transparent;}
+.room-card:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(0,0,0,.09);}
+.room-free{background:#F0FAF5;border-color:#A3DEC7!important;}
+.room-busy{background:#FFF5F5;border-color:#FFBBBB!important;cursor:default;}
+.room-free:hover{background:#E5F7F0;}
+.modal-overlay{position:fixed;inset:0;background:rgba(15,25,35,.45);backdrop-filter:blur(4px);z-index:200;display:flex;align-items:center;justify-content:center;}
+.modal{background:#fff;border-radius:20px;padding:28px;width:440px;max-width:92vw;box-shadow:0 24px 80px rgba(0,0,0,.22);animation:fadeUp .25s ease;}
+.btn-primary{background:${PINE};color:#fff;border:none;border-radius:10px;padding:11px 22px;font-size:14px;font-weight:600;cursor:pointer;font-family:${FONT};transition:opacity .15s;width:100%;}
+.btn-primary:hover{opacity:.88;}
+.btn-ghost{background:transparent;color:${TXTM};border:1.5px solid ${BDR};border-radius:10px;padding:10px 18px;font-size:13px;font-weight:600;cursor:pointer;font-family:${FONT};transition:all .15s;width:100%;}
+.btn-ghost:hover{border-color:${PINE};color:${PINE};}
+.tfl-pill{display:inline-flex;align-items:center;padding:4px 10px;border-radius:99px;font-size:11.5px;font-weight:700;color:#fff;}
+.seg{display:flex;background:${BG};border-radius:10px;padding:3px;gap:2px;}
+.seg-btn{flex:1;padding:7px 14px;border:none;background:transparent;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;color:${TXTM};font-family:${FONT};transition:all .15s;}
+.seg-btn.on{background:#fff;color:${PINE};box-shadow:0 1px 4px rgba(0,0,0,.1);}
+input[type=time],input[type=date]{font-family:${FONT};font-size:14px;color:${TXT};border:1.5px solid ${BDR};border-radius:9px;padding:9px 12px;outline:none;background:#fff;transition:border-color .15s;width:100%;}
+input[type=time]:focus,input[type=date]:focus{border-color:${PINE};}
+`;
+
+// ── STATIC FALLBACK DATA ──────────────────────────────────────────
+const STATIC = {
+  announcements:[
+    "🏆 Hack to the Future demos & awards — TODAY at 14:00 in the All Hands Area. Come and cheer on the teams!",
+    "🔥 Fire alarm test at 15:30 today — no need to evacuate, it\'s just a test!",
+    "🤖 Accurx AI Talks: Fireside with Des Traynor (Intercom CEO) — Thu 23 Apr at 10:00",
+    "👋 Next new starter cohort: Mon 27 Apr — names TBC!",
+  ],
+  rooms:[
+    {name:"Barry",      seats:7, floor:"Ground",calId:"c_188250ov9hnmggc7mdb77sag677lu@resource.calendar.google.com",free:true, until:null},
+    {name:"Bevan",      seats:5, floor:"Ground",calId:"c_1883hu3sl1q5qi27iqd93n91duqme@resource.calendar.google.com",free:true, until:null},
+    {name:"Blackwell",  seats:5, floor:"Ground",calId:"c_18850hinng97qgt4kaaq6fu58hk2e@resource.calendar.google.com",free:true, until:null},
+    {name:"Caldicott",  seats:7, floor:"Ground",calId:"c_1882s8m0eoqegidchj2p8gt5ee7sc@resource.calendar.google.com",free:false,until:"17:15"},
+    {name:"Crumpler",   seats:4, floor:"Ground",calId:"c_1881l2ehcdqjeinmgumt0vpen207g@resource.calendar.google.com",free:true, until:null},
+    {name:"Garrett",    seats:8, floor:"Ground",calId:"c_1884dhoqt4ncki3okufps4qk4uci8@resource.calendar.google.com",free:true, until:null},
+    {name:"Gawande",    seats:10,floor:"Ground",calId:"c_1882b83uoncgsjg6m4t0at105nlgk@resource.calendar.google.com",free:true, until:null},
+    {name:"Hopper",     seats:4, floor:"Ground",calId:"c_188b1e4usjsd4g22mguuq0i3lgbpa@resource.calendar.google.com",free:true, until:null},
+    {name:"Horton",     seats:16,floor:"Ground",calId:"c_188bmm59l53uujtrg9ksfna2q2vik@resource.calendar.google.com",free:true, until:null},
+    {name:"Jex-Blake",  seats:5, floor:"Ground",calId:"c_1889a4cqbac6uj08k5iaidc0r8sv0@resource.calendar.google.com",free:false,until:"16:00"},
+    {name:"Laennec",    seats:5, floor:"Ground",calId:"c_188cd7tg50juginlnos75aulkk246@resource.calendar.google.com",free:false,until:"17:00"},
+    {name:"Lovelace",   seats:8, floor:"Ground",calId:"c_188c40gn9llukihhn8qv07k7mq1po@resource.calendar.google.com",free:true, until:null},
+    {name:"Marmot",     seats:8, floor:"Ground",calId:"c_188329j623boein3g6n0h0f95sp6c@resource.calendar.google.com",free:true, until:null},
+    {name:"Nightingale",seats:3, floor:"Ground",calId:"c_1886pepv092ikj8hivfavi97o8c9u@resource.calendar.google.com",free:true, until:null},
+    {name:"Papanicolau",seats:7, floor:"First", calId:"c_18806n88gqfhmiq2gfkh5892qm65g@resource.calendar.google.com",free:false,until:"EOD"},
+    {name:"Perl",       seats:6, floor:"First", calId:"c_1889dp9b9ta5sh65gnjep9laou9h2@resource.calendar.google.com",free:false,until:"EOD"},
+    {name:"Seacole",    seats:16,floor:"First", calId:"c_188dr5h65lf0qhrjl7c4rcs18r33i@resource.calendar.google.com",free:false,until:"EOD"},
+  ],
+  events:[
+    {title:"🏆 Hack to the Future: Demos & Awards — TODAY",date:"Thu 17 Apr",time:"14:00",cat:"Company"},
+    {title:"WeNeedToTalk — Women in Tech",                  date:"Tue 21 Apr",time:"18:00",cat:"Social"},
+    {title:"Show and Tell",                                 date:"Wed 22 Apr",time:"09:30",cat:"Company"},
+    {title:"Accurx AI Talks: Fireside with Des Traynor",    date:"Thu 23 Apr",time:"10:00",cat:"Learning"},
+    {title:"Ministry of Health Event",                      date:"Thu 23 Apr",time:"17:00",cat:"External"},
+    {title:"Accurx Connects pre-event meeting",             date:"Mon 27 Apr",time:"13:30",cat:"Company"},
+  ],
+  // Today's menu — Thu 17 Apr
+  menu:[
+    {e:"🥬",name:"Braised red cabbage",                            tags:["Vegan","GF"]},
+    {e:"🥗",name:"Cucumber & tomato salad, parsley vinaigrette",   tags:["Vegan","GF"]},
+    {e:"🥔",name:"Rosemary roast potatoes",                        tags:["Vegan","GF"]},
+    {e:"🐟",name:"Fish pie",                                        tags:["Fish","Dairy","Gluten"]},
+    {e:"🫕",name:"Roasted vegetable stew",                         tags:["Vegan","GF"]},
+  ],
+  starters:{
+    today:[
+      {name:"Megan Urquhart",    color:PINE},
+      {name:"Rob Dyke",          color:BLUE},
+      {name:"Syed Muizurrahman", color:CORAL},
+    ],
+    accuversaries:[
+      {name:"Ali C.",     years:5,date:"19 Apr 🎉",color:"#F39C12"},
+      {name:"Alex B.",    years:4,date:"25 Apr",   color:"#2980B9"},
+      {name:"Iraj S.",    years:4,date:"25 Apr",   color:"#7F8C8D"},
+    ],
+  },
+  quickLinks:[
+    {label:"#ask-it",     url:"https://accurx.slack.com/channels/ask-it",                  emoji:"💻",desc:"IT help"},
+    {label:"#ask-office", url:"https://accurx.slack.com/channels/ask-office",              emoji:"🏢",desc:"Office & facilities"},
+    {label:"Company Home",url:"https://notion.so/accurx/73124cb825d14a3fb059a2f95d4a482d",emoji:"🏠",desc:"Notion hub"},
+    {label:"Benefits",    url:"https://notion.so/accurx/2857794053d180ef98e0f8f37f561e13",emoji:"🎁",desc:"Happl, health plan"},
+    {label:"Expenses",    url:"https://notion.so/accurx/66c8710927344d17b6e27f050cb1f033",emoji:"💷",desc:"Claim via Happl"},
+    {label:"Who is Who",  url:"https://notion.so/accurx/db8d3cc2501546f1a29d7a218ba94a4d",emoji:"👥",desc:"Org chart"},
+    {label:"Onboarding",  url:"https://notion.so/accurx/33e7794053d18158b760de4224f76607",emoji:"🏄",desc:"New joiner checklist"},
+    {label:"OKRs",        url:"https://notion.so/accurx/5f99c8ae27e8416daa065fb5677e6a4b",emoji:"🎯",desc:"Company objectives"},
+  ],
+};
+
+// ── HELPERS ───────────────────────────────────────────────────────
+const ini  = n => (n||"?").split(" ").map(p=>p[0]).join("").slice(0,2).toUpperCase();
+const now  = ()  => new Date();
+const hr   = ()  => now().getHours();
+const padT = n   => String(n).padStart(2,"0");
+
+function getTimeAwareSuggestions(){
+  const h=hr();
+  if(h<10) return["Which rooms are free this morning?","What's for lunch today?","What events are on this week?","Who are the new starters?"];
+  if(h<12) return["Any free rooms for 4+ people?","What's for lunch today?","What's on this afternoon?","How do I book a meeting room?"];
+  if(h<14) return["Which rooms are free right now?","What's for lunch today?","What events are on this week?","How do I claim expenses?"];
+  if(h<17) return["Any quiet rooms for a late call?","What's on this week?","What clubs can I join?","Tell me about Patient Triage"];
+  return["What's on this week?","What are the company principles?","Tell me about Accurx Scribe","What clubs can I join?"];
+}
+
+function buildCalUrl(room,start,endTime,date){
+  const d=date||now().toISOString().slice(0,10);
+  const s=`${d.replace(/-/g,"")}T${start.replace(":","")  }00`;
+  const e=`${d.replace(/-/g,"")}T${endTime.replace(":","") }00`;
+  const p=new URLSearchParams({action:"TEMPLATE",text:`Meeting in ${room.name}`,dates:`${s}/${e}`,add:room.calId});
+  return `https://calendar.google.com/calendar/render?${p}`;
+}
+
+// ── MENU FETCH — calls Netlify Function which reads from Google Sheet ──
+// The sheet is populated automatically by Zapier when the chef posts
+// the weekly menu in Slack #food on Fridays.
+async function fetchLunchMenu(){
+  try{
+    const r = await fetch(API.MENU);
+    if(!r.ok) throw new Error(r.status);
+    const d = await r.json();
+    if(d.items && d.items.length > 0) return { items: d.items, live: true };
+    return { items: STATIC.menu, live: false, noDataToday: true };
+  }catch(e){
+    return { items: STATIC.menu, live: false };
+  }
+}
+
+// ── WEATHER (Open-Meteo — free, no API key) ───────────────────────
+async function fetchWeather(){
+  try{
+    const r=await fetch("https://api.open-meteo.com/v1/forecast?latitude=51.5248&longitude=-0.0793&current=temperature_2m,weathercode,windspeed_10m&daily=temperature_2m_max,temperature_2m_min&timezone=Europe%2FLondon&forecast_days=1");
+    if(!r.ok) throw new Error();
+    const d=await r.json();
+    const code=d.current.weathercode;
+    return{temp:Math.round(d.current.temperature_2m),max:Math.round(d.daily.temperature_2m_max[0]),min:Math.round(d.daily.temperature_2m_min[0]),wind:Math.round(d.current.windspeed_10m),emoji:wxEmoji(code),desc:wxDesc(code),live:true};
+  }catch(e){return{temp:9,max:14,min:6,wind:18,emoji:"⛅",desc:"Partly cloudy",live:false};}
+}
+const wxEmoji=c=>c===0?"☀️":c<=2?"🌤️":c<=3?"☁️":c<=48?"🌫️":c<=67?"🌧️":c<=77?"❄️":c<=82?"🌦️":"⛈️";
+const wxDesc =c=>c===0?"Clear sky":c<=2?"Partly cloudy":c<=3?"Overcast":c<=48?"Foggy":c<=57?"Drizzle":c<=67?"Rainy":c<=77?"Snow":c<=82?"Showers":"Thunderstorm";
+
+// ── TFL (free, no API key) ────────────────────────────────────────
+async function fetchTfl(){
+  try{
+    const ids=TFL_LINES.map(l=>l.id).join(",");
+    const r=await fetch(`https://api.tfl.gov.uk/Line/${ids}/Status`);
+    if(!r.ok) throw new Error();
+    const data=await r.json();
+    return data.map(line=>({id:line.id,name:line.name,status:line.lineStatuses?.[0]?.statusSeverityDescription||"Unknown",good:(line.lineStatuses?.[0]?.statusSeverityDescription||"")==="Good Service"}));
+  }catch(e){return TFL_LINES.map(l=>({...l,status:"Unknown",good:true}));}
+}
+
+// ── CLAUDE API — routed through Netlify Function (key stays server-side)
+async function callClaude(messages,system){
+  const r=await fetch(API.CLAUDE,{
+    method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({messages,system,max_tokens:1000}),
+  });
+  if(!r.ok) throw new Error(`Claude API ${r.status}`);
+  const d=await r.json();
+  return d.content?.[0]?.text||"Sorry, something went wrong — please try again!";
+}
+
+function getSystemPrompt(rooms,calEvents,menu,weather,tfl){
+  const d=now();
+  const menuText = menu.items.map(i=>`• ${i.e} ${i.name} [${i.tags.join(", ")}]`).join("\n");
+  return`You are ACCUBOT, the Accurx internal workplace AI. Warm, concise, knowledgeable — like a brilliant colleague who knows everything.
+
+TODAY: ${d.toLocaleDateString("en-GB",{weekday:"long",day:"numeric",month:"long",year:"numeric"})}, ${d.toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})}
+
+WEATHER (Shoreditch): ${weather?.emoji||"⛅"} ${weather?.desc||"Partly cloudy"}, ${weather?.temp||9}°C (${weather?.min||6}–${weather?.max||14}°C), wind ${weather?.wind||18}km/h.
+
+TFL STATUS: ${(tfl||[]).map(l=>`${l.name}: ${l.status}`).join(" | ")||"Not available"}
+
+TODAY'S LUNCH ${menu.live?"(live from kitchen sheet)":"(today's menu — check #food on Slack for updates)"}:
+${menuText}
+
+MEETING ROOMS:
+${rooms.map(r=>`${r.name} (${r.seats} seats, ${r.floor} floor): ${r.free?"FREE NOW":`Busy until ${r.until}`}`).join("\n")}
+To book: click any room on the dashboard — opens Google Calendar with the room pre-selected.
+
+UPCOMING EVENTS:
+${(calEvents.length?calEvents:STATIC.events).map(e=>`• ${e.title} — ${e.date} ${e.time}`).join("\n")}
+
+ANNOUNCEMENTS:
+${STATIC.announcements.map(a=>`• ${a}`).join("\n")}
+
+ACCURX: Mission: Fix healthcare communication. ~109 people. AI Reset underway.
+Products: Patient Triage (1M+ req/week) · Accurx Scribe/AVT (UHL £1.8m, OneLSC £6.4m) · Desktop & Mobile · AI Triage Suite.
+Principles: Be a driver not a passenger · Raise the bar · Succeed together · Embrace challenge · Fix healthcare communication.
+
+OFFICE: 7 Curtain Road, London EC2A 3LT. Open 24/7. Late access: 07482411422. Dogs welcome (not in kitchen). Fire alarm test Fridays 3:30pm — no need to evacuate. Payday: 24th. Casual dress.
+BENEFITS: Via Happl platform. Health cash plan. Expenses via Happl.
+CLUBS: Matcha 🍵 #matchaclub · Run 🏃 Wednesdays · Film 🎬 #film-club · Footy ⚽ #footy-club · Climbing 🧗 #climbing-club · Book 📚 #book-club
+WHO TO ASK: IT → #ask-it / it@accurx.com | Office → #ask-office | HR → people@accurx.com
+
+RESPONSE RULES:
+- Be concise and warm. Bold key terms. Bullets for 3+ items.
+- Headers only for long multi-section answers.
+- Always use [descriptive text](url) format for links — never raw URLs.
+- End answers about events, clubs or visits with the relevant Slack channel.
+- CRITICAL: If you are not certain about something, say so clearly. Never invent names, dates, policies or room bookings. Say "I'm not sure — check Notion or ask in #ask-office" rather than guessing.
+- CRITICAL: For room bookings, always direct users to click the room on the dashboard — never claim to book on their behalf.
+- If asked about something not in this prompt, say you don't have that information and suggest the best person or channel to ask.`;
+}
+
+// ── ROOMS FETCH — calls Netlify Function → Google Calendar freebusy ──
+async function fetchRooms(){
+  try{
+    const r=await fetch(API.ROOMS);
+    if(!r.ok) throw new Error(r.status);
+    const d=await r.json();
+    return d.rooms || null;
+  }catch(e){
+    return null; // fallback to static data
+  }
+}
+
+// ── LIVE DATA HOOK ────────────────────────────────────────────────
+function useLiveData(){
+  const [calEvents,   setCalEvents]   = useState([]);
+  const [calLoaded,   setCalLoaded]   = useState(false);
+  const [rooms,       setRooms]       = useState(STATIC.rooms);
+  const [roomsLive,   setRoomsLive]   = useState(false);
+  const [menu,        setMenu]        = useState({items:STATIC.menu,live:false});
+  const [weather,     setWeather]     = useState(null);
+  const [tfl,         setTfl]         = useState([]);
+  const [lastUpdated, setLastUpdated] = useState(null);
+
+  const fetchAll=useCallback(async(isManual=false)=>{
+    // 1. Weather + TfL + Lunch + Rooms all in parallel
+    const [wx,tflData,lunchData,roomsData]=await Promise.all([
+      fetchWeather(), fetchTfl(), fetchLunchMenu(), fetchRooms()
+    ]);
+    setWeather(wx);
+    setTfl(tflData);
+    setMenu(lunchData);
+    if(roomsData){ setRooms(roomsData); setRoomsLive(true); }
+
+    // 2. Google Calendar events via Netlify Function → Claude MCP
+    try{
+      const r=await fetch(API.CLAUDE,{
+        method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          max_tokens:800,
+          system:`Return ONLY valid JSON, no markdown. Current time: ${new Date().toISOString()}.
+Format: {"events":[{"title":"string","date":"like 'Fri 17 Apr'","time":"like '14:00'","cat":"Company|Social|Learning|External"}]}
+Return {"events":[]} if no access.`,
+          messages:[{role:"user",content:"List upcoming Accurx company events from Google Calendar for the next 30 days. JSON only."}],
+          mcp_servers:[{type:"url",url:"https://calendarmcp.googleapis.com/mcp/v1",name:"google-calendar"}],
+        }),
+      });
+      const d=await r.json();
+      const text=(d.content||[]).map(b=>b.text||"").join("").replace(/```json|```/g,"").trim();
+      try{const p=JSON.parse(text);if(p.events?.length){setCalEvents(p.events);setCalLoaded(true);}}catch(e){}
+    }catch(e){}
+    setLastUpdated(new Date());
+  },[]);
+
+  useEffect(()=>{
+    fetchAll();
+    const iv=setInterval(fetchAll,REFRESH_SECONDS*1000);
+    const onVisible=()=>{ if(!document.hidden) fetchAll(); };
+    document.addEventListener("visibilitychange",onVisible);
+    return()=>{ clearInterval(iv); document.removeEventListener("visibilitychange",onVisible); };
+  },[fetchAll]);
+
+  return{calEvents,calLoaded,rooms,roomsLive,menu,weather,tfl,lastUpdated,refetch:fetchAll};
+}
+
+// ── LOGO ──────────────────────────────────────────────────────────
+function Logo({size=28}){
+  return(
+    <svg width={size} height={size} viewBox="0 0 200 200" fill="none">
+      <rect width="200" height="200" rx="40" fill={PINE}/>
+      <path d="M55 100C55 72 72 55 100 55L100 78C85 78 78 85 78 100C78 115 85 122 100 122L100 145C72 145 55 128 55 100Z" fill="white" opacity="0.9"/>
+      <path d="M100 55L112 55C138 55 148 72 148 100C148 128 138 145 112 145L100 145L100 122L112 122C122 122 125 114 125 100C125 86 122 78 112 78L100 78Z" fill="#5ee8a8"/>
+      <rect x="78" y="88" width="22" height="24" rx="5" fill={PINE}/>
+      <rect x="100" y="88" width="22" height="24" rx="5" fill={PINE}/>
+    </svg>
+  );
+}
+
+// ── MARKDOWN RENDERER ─────────────────────────────────────────────
+function inl(text){
+  const parts=[];let i=0;
+  const re=/(\*\*(.+?)\*\*)|(\[(.+?)\]\((.+?)\))|(`(.+?)`)/g;let m;
+  while((m=re.exec(text))!==null){
+    if(m.index>i)parts.push(text.slice(i,m.index));
+    if(m[1])parts.push(<strong key={m.index} style={{color:TXT,fontWeight:700}}>{m[2]}</strong>);
+    else if(m[3])parts.push(<a key={m.index} href={m[5]} target="_blank" rel="noopener" style={{color:PINE,fontWeight:600,textDecoration:"underline"}}>{m[4]}</a>);
+    else if(m[6])parts.push(<code key={m.index} style={{background:BG,borderRadius:4,padding:"1px 5px",fontSize:12,fontFamily:"monospace"}}>{m[7]}</code>);
+    i=m.index+m[0].length;
+  }
+  if(i<text.length)parts.push(text.slice(i));
+  return parts.length?parts:text;
+}
+function renderMd(text){
+  const lines=text.split("\n");const els=[];let i=0;
+  while(i<lines.length){
+    const line=lines[i];
+    if(!line.trim()){i++;continue;}
+    if(line.startsWith("## ")){els.push(<div key={i} style={{fontSize:15,fontWeight:700,color:TXT,margin:"12px 0 5px",borderBottom:`1px solid ${BDR}`,paddingBottom:4}}>{inl(line.slice(3))}</div>);i++;continue;}
+    if(line.startsWith("# ")) {els.push(<div key={i} style={{fontSize:16,fontWeight:700,color:TXT,margin:"12px 0 5px"}}>{inl(line.slice(2))}</div>);i++;continue;}
+    if(line.match(/^[-*]\s/)){
+      const items=[];
+      while(i<lines.length&&lines[i].match(/^[-*]\s/)){
+        items.push(<div key={i} style={{display:"flex",gap:9,marginBottom:4,alignItems:"flex-start"}}>
+          <span style={{color:PINE,fontWeight:700,flexShrink:0,marginTop:1}}>·</span>
+          <span style={{flex:1,lineHeight:1.65}}>{inl(lines[i].replace(/^[-*]\s/,""))}</span>
+        </div>);i++;
+      }
+      els.push(<div key={"ul"+i} style={{margin:"6px 0"}}>{items}</div>);continue;
+    }
+    els.push(<p key={i} style={{lineHeight:1.7,marginBottom:5}}>{inl(line)}</p>);i++;
+  }
+  return els;
+}
+
+// ── BOOKING MODAL ─────────────────────────────────────────────────
+function BookingModal({room,onClose}){
+  const todayStr=now().toISOString().slice(0,10);
+  const [date,setDate]=useState(todayStr);
+  const [start,setStart]=useState(()=>{
+    const h=hr(),m=now().getMinutes();
+    return m<30?`${padT(h)}:30`:`${padT(h+1)}:00`;
+  });
+  const [duration,setDuration]=useState(30);
+  const endTime=useMemo(()=>{
+    const[h,m]=start.split(":").map(Number);
+    const tot=h*60+m+duration;
+    return`${padT(Math.floor(tot/60)%24)}:${padT(tot%60)}`;
+  },[start,duration]);
+
+  return(
+    <div className="modal-overlay" onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div className="modal">
+        <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:20}}>
+          <div>
+            <div style={{fontSize:20,fontWeight:700,color:TXT,marginBottom:4}}>{room.name}</div>
+            <div style={{display:"flex",gap:8,alignItems:"center"}}>
+              <span style={{fontSize:12,color:TXTM}}>{room.floor} floor · {room.seats} seats</span>
+              <span style={{fontSize:11,fontWeight:700,padding:"2px 9px",borderRadius:99,background:room.free?"#F0FAF5":"#FFF5F5",color:room.free?GREEN:CORAL}}>
+                {room.free?"Free now":`Busy until ${room.until}`}
+              </span>
+            </div>
+          </div>
+          <button onClick={onClose} style={{background:"none",border:"none",cursor:"pointer",fontSize:24,color:TXTL,lineHeight:1}}>×</button>
+        </div>
+        <div style={{marginBottom:14}}>
+          <div style={{fontSize:12,fontWeight:600,color:TXTM,marginBottom:6}}>Date</div>
+          <input type="date" value={date} min={todayStr} onChange={e=>setDate(e.target.value)}/>
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:14}}>
+          <div>
+            <div style={{fontSize:12,fontWeight:600,color:TXTM,marginBottom:6}}>Start</div>
+            <input type="time" value={start} onChange={e=>setStart(e.target.value)}/>
+          </div>
+          <div>
+            <div style={{fontSize:12,fontWeight:600,color:TXTM,marginBottom:6}}>End (calculated)</div>
+            <input type="time" value={endTime} readOnly style={{background:BG,color:TXTM}}/>
+          </div>
+        </div>
+        <div style={{marginBottom:20}}>
+          <div style={{fontSize:12,fontWeight:600,color:TXTM,marginBottom:6}}>Duration</div>
+          <div className="seg">
+            {[30,60,90,120].map(d=>(
+              <button key={d} className={`seg-btn${duration===d?" on":""}`} onClick={()=>setDuration(d)}>
+                {d<60?`${d}m`:`${d/60}h`}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div style={{background:"#F0FAF5",borderRadius:10,padding:"11px 14px",fontSize:13,color:PINE,marginBottom:18,lineHeight:1.5}}>
+          📅 Opens Google Calendar with <strong>{room.name}</strong> pre-selected. Add a title and invite attendees.
+        </div>
+        <div style={{display:"flex",gap:10}}>
+          <button className="btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn-primary" onClick={()=>{window.open(buildCalUrl(room,start,endTime,date),"_blank");onClose();}}>
+            Open in Google Calendar →
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── SHARED COMPONENTS ─────────────────────────────────────────────
+function Ticker({announcements}){
+  const txt=announcements.join("     ·     ");
+  return(
+    <div style={{background:MID,height:33,overflow:"hidden",display:"flex",alignItems:"center",flexShrink:0}}>
+      <div style={{flexShrink:0,padding:"0 14px",fontSize:10,fontWeight:700,color:"rgba(255,255,255,.4)",textTransform:"uppercase",letterSpacing:".1em",borderRight:"1px solid rgba(255,255,255,.12)",marginRight:14,whiteSpace:"nowrap"}}>LIVE</div>
+      <div style={{overflow:"hidden",flex:1}}>
+        <div className="ticker" style={{fontSize:12.5,fontWeight:500,color:"rgba(255,255,255,.9)"}}>{txt}&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{txt}</div>
+      </div>
+    </div>
+  );
+}
+
+function WeatherTflBar({weather,tfl}){
+  const disrupted=tfl.filter(l=>!l.good);
+  return(
+    <div style={{background:"#fff",borderBottom:`1px solid ${BDR}`,padding:"0 24px",height:42,display:"flex",alignItems:"center",gap:18,flexShrink:0,overflowX:"auto"}}>
+      {weather&&(
+        <div style={{display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
+          <span style={{fontSize:18}}>{weather.emoji}</span>
+          <span style={{fontSize:13,fontWeight:700,color:TXT}}>{weather.temp}°C</span>
+          <span style={{fontSize:12,color:TXTM}}>{weather.desc}</span>
+          <span style={{fontSize:11,color:TXTL}}>↑{weather.max}° ↓{weather.min}°</span>
+          <span style={{fontSize:11,color:TXTL}}>💨 {weather.wind}km/h</span>
+        </div>
+      )}
+      <div style={{width:1,height:18,background:BDR,flexShrink:0}}/>
+      <div style={{display:"flex",alignItems:"center",gap:6,flexShrink:0}}>
+        <span style={{fontSize:10.5,fontWeight:700,color:TXTL,textTransform:"uppercase",letterSpacing:".06em",marginRight:2}}>TfL</span>
+        {(tfl.length?tfl:TFL_LINES).map(line=>{
+          const cfg=TFL_LINES.find(l=>l.id===line.id)||{color:MID};
+          const isGood=line.good!==false;
+          return(
+            <div key={line.id} className="tfl-pill" style={{background:isGood?cfg.color:"#DC2626",opacity:tfl.length?1:.45}}>
+              {(line.name||"").replace("Hammersmith & City","H&C").split(" ")[0]}
+              {!isGood&&" ⚠"}
+            </div>
+          );
+        })}
+        {disrupted.length===0&&tfl.length>0&&<span style={{fontSize:11,color:GREEN,fontWeight:700,marginLeft:3}}>All good ✓</span>}
+        {disrupted.length>0&&<span style={{fontSize:11,color:"#DC2626",fontWeight:700,marginLeft:3}}>{disrupted.length} disrupted</span>}
+      </div>
+    </div>
+  );
+}
+
+function DietTag({tag}){
+  const styles={
+    "Vegan":          {bg:"#dcfce7",color:GREEN},
+    "GF":             {bg:"#f3e8ff",color:"#7c3aed"},
+    "Vegetarian":     {bg:"#fef9c3",color:"#854d0e"},
+  };
+  const s=styles[tag]||{bg:"#F0F2F4",color:TXTM};
+  return <span style={{fontSize:10,fontWeight:700,padding:"2px 7px",borderRadius:99,...s}}>{tag}</span>;
+}
+
+// ── LUNCH CARD — the new hero feature ────────────────────────────
+function LunchCard({menu}){
+  const isLive=menu?.live;
+  const items=menu?.items||STATIC.menu;
+  const noData=menu?.noDataToday;
+  return(
+    <div className="card" style={{height:"100%"}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14}}>
+        <div className="lbl" style={{marginBottom:0}}>🍽️ Today's Lunch</div>
+        <span style={{display:"inline-flex",alignItems:"center",gap:5,fontSize:10,fontWeight:700,padding:"3px 9px",borderRadius:99,
+          background:isLive?"#E6F5F5":"#FFF8E6",color:isLive?PINE:AMBER}}>
+          <span style={{width:5,height:5,borderRadius:"50%",background:isLive?PINE:AMBER,display:"inline-block"}}/>
+          {isLive?"Live · Slack menu":"Updated daily by the kitchen team"}
+        </span>
+      </div>
+
+      {noData&&(
+        <div style={{fontSize:12,color:AMBER,background:"#FFF8E6",borderRadius:9,padding:"9px 12px",marginBottom:12}}>
+          ⚠ No menu found for today in the sheet — showing yesterday's as fallback.
+        </div>
+      )}
+
+      <div style={{display:"flex",flexDirection:"column",gap:0}}>
+        {items.map((item,i)=>(
+          <div key={i} style={{display:"flex",alignItems:"flex-start",gap:12,padding:"11px 0",borderBottom:i<items.length-1?`1px solid ${BDR}`:"none"}}>
+            <span style={{fontSize:22,flexShrink:0,lineHeight:1,marginTop:2}}>{item.e}</span>
+            <div style={{flex:1}}>
+              <div style={{fontSize:13.5,fontWeight:500,color:TXT,lineHeight:1.4,marginBottom:5}}>{item.name}</div>
+              <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+                {item.tags.map(t=><DietTag key={t} tag={t}/>)}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {!isLive&&(
+        <div style={{marginTop:12,fontSize:12,color:TXTM,background:BG,borderRadius:9,padding:"9px 12px",lineHeight:1.6}}>
+          🔌 <strong style={{color:TXT}}>Live menu not connected yet.</strong> Once the Zapier zap is set up, the menu will update automatically every Friday from Slack #food.
+        </div>
+      )}
+
+      <a href="https://accurx.slack.com/archives/C01C56PFXPT" target="_blank" rel="noopener"
+        style={{display:"block",marginTop:12,fontSize:12,fontWeight:600,color:PINE,borderTop:`1px solid ${BDR}`,paddingTop:12}}>
+        #food on Slack for full menu →
+      </a>
+    </div>
+  );
+}
+
+function EventsCard({events,calLoaded}){
+  const ev=events.length?events:STATIC.events;
+  return(
+    <div className="card">
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14}}>
+        <div className="lbl" style={{marginBottom:0}}>📅 Upcoming Events</div>
+        <span style={{display:"inline-flex",alignItems:"center",gap:5,fontSize:10,fontWeight:700,padding:"3px 9px",borderRadius:99,background:calLoaded?"#E6F5F5":"#FFF8E6",color:calLoaded?PINE:AMBER}}>
+          <span style={{width:5,height:5,borderRadius:"50%",background:calLoaded?PINE:AMBER,display:"inline-block"}}/>
+          {calLoaded?"Live · GCal":"Static"}
+        </span>
+      </div>
+      {ev.map((e,i)=>{
+        const s=CAT[e.cat]||CAT.Company;
+        return(
+          <div key={i} style={{display:"flex",alignItems:"center",gap:12,marginBottom:11,paddingBottom:11,borderBottom:i<ev.length-1?`1px solid ${BDR}`:"none"}}>
+            <div style={{width:3,minHeight:32,borderRadius:2,flexShrink:0,background:s.c}}/>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:13.5,fontWeight:500,color:TXT,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{e.title}</div>
+              <div style={{fontSize:11.5,color:TXTM,marginTop:2}}>{e.date} · {e.time}</div>
+            </div>
+            <span style={{fontSize:10,fontWeight:700,padding:"3px 9px",borderRadius:99,background:s.bg,color:s.c,flexShrink:0}}>{e.cat}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function RoomsGrid({rooms,onBook,freeOnly}){
+  const [seats,setSeats]=useState(0);
+  const [floor,setFloor]=useState("All");
+  const filtered=rooms.filter(r=>{
+    if(freeOnly&&!r.free)return false;
+    if(seats>0&&r.seats<seats)return false;
+    if(floor!=="All"&&r.floor!==floor)return false;
+    return true;
+  });
+  return(
+    <div>
+      <div style={{display:"flex",gap:7,marginBottom:16,flexWrap:"wrap",alignItems:"center"}}>
+        <span style={{fontSize:12,fontWeight:600,color:TXTM}}>Seats:</span>
+        {[0,3,5,8,10].map(n=><button key={n} className={`chip${seats===n?" on":""}`} onClick={()=>setSeats(n)}>{n===0?"Any":`${n}+`}</button>)}
+        <div style={{width:1,height:20,background:BDR,margin:"0 4px"}}/>
+        {["All","Ground","First"].map(f=><button key={f} className={`chip${floor===f?" on":""}`} onClick={()=>setFloor(f)}>{f}</button>)}
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(155px,1fr))",gap:9}}>
+        {filtered.map(r=>(
+          <div key={r.name} className={`room-card ${r.free?"room-free":"room-busy"}`} onClick={()=>r.free&&onBook(r)}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:7}}>
+              <div style={{fontSize:14,fontWeight:700,color:r.free?"#166534":CORAL}}>{r.name}</div>
+              <span style={{fontSize:15}}>{r.free?"🟢":"🔴"}</span>
+            </div>
+            <div style={{fontSize:12,color:r.free?"#15803d":"#DC2626",fontWeight:600,marginBottom:4}}>{r.free?"Free now":`Until ${r.until}`}</div>
+            <div style={{fontSize:11,color:TXTM,marginBottom:r.free?10:0}}>{r.seats} seats · {r.floor}</div>
+            {r.free&&<div style={{fontSize:11,fontWeight:700,color:PINE,background:"#E6F5F5",borderRadius:6,padding:"4px 8px",textAlign:"center"}}>Tap to book →</div>}
+          </div>
+        ))}
+        {filtered.length===0&&<div style={{gridColumn:"1/-1",padding:"28px",textAlign:"center",color:TXTL,fontSize:13}}>No rooms match your filters</div>}
+      </div>
+    </div>
+  );
+}
+
+function PeopleCard(){
+  return(
+    <div className="card">
+      <div className="lbl">👋 People</div>
+      <div style={{fontSize:10.5,fontWeight:700,textTransform:"uppercase",letterSpacing:".07em",color:TXTL,marginBottom:10}}>Starting today</div>
+      <div style={{display:"flex",gap:12,marginBottom:18,paddingBottom:18,borderBottom:`1px solid ${BDR}`}}>
+        {STATIC.starters.today.map((s,i)=>(
+          <div key={i} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:6,textAlign:"center"}}>
+            <div style={{width:46,height:46,borderRadius:"50%",background:s.color,display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,fontWeight:700,color:"#fff"}}>{ini(s.name)}</div>
+            <div style={{fontSize:12,fontWeight:600,color:TXT,lineHeight:1.3}}>{s.name}</div>
+          </div>
+        ))}
+      </div>
+      <div style={{fontSize:10.5,fontWeight:700,textTransform:"uppercase",letterSpacing:".07em",color:TXTL,marginBottom:10}}>Accuversaries this month 🎉</div>
+      <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+        {STATIC.starters.accuversaries.map((a,i)=>(
+          <div key={i} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:5,textAlign:"center",minWidth:54}}>
+            <div style={{width:40,height:40,borderRadius:"50%",background:a.color,display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,fontWeight:700,color:"#fff"}}>{ini(a.name)}</div>
+            <div style={{fontSize:11,fontWeight:600,color:TXT}}>{a.name}</div>
+            <div style={{fontSize:10,color:TXTL}}>{a.date} · {a.years}y</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function QuickLinksCard(){
+  return(
+    <div className="card">
+      <div className="lbl">🔗 Quick Links</div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(175px,1fr))",gap:9}}>
+        {STATIC.quickLinks.map((l,i)=>(
+          <a key={i} href={l.url} target="_blank" rel="noopener"
+            style={{background:BG,border:`1px solid ${BDR}`,borderRadius:11,padding:"11px 13px",display:"flex",gap:10,alignItems:"center",transition:"all .15s"}}
+            onMouseEnter={e=>{e.currentTarget.style.borderColor=PINE;e.currentTarget.style.background="#fff";}}
+            onMouseLeave={e=>{e.currentTarget.style.borderColor=BDR;e.currentTarget.style.background=BG;}}>
+            <span style={{fontSize:18,flexShrink:0}}>{l.emoji}</span>
+            <div>
+              <div style={{fontSize:13,fontWeight:600,color:TXT}}>{l.label}</div>
+              <div style={{fontSize:11,color:TXTM}}>{l.desc}</div>
+            </div>
+          </a>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── ACCUBOT ───────────────────────────────────────────────────────
+function Bubble({msg,isStreaming}){
+  const isUser=msg.role==="user";
+  return(
+    <div className="fi" style={{display:"flex",gap:10,marginBottom:16,flexDirection:isUser?"row-reverse":"row",alignItems:"flex-start"}}>
+      {!isUser&&<div style={{width:30,height:30,borderRadius:8,background:`linear-gradient(135deg,${PINE},${BLUE})`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,color:"#fff",fontWeight:700,flexShrink:0}}>✦</div>}
+      {isUser&&<div style={{width:30,height:30,borderRadius:"50%",background:BDR,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,color:TXTM,flexShrink:0}}>You</div>}
+      <div style={{maxWidth:"78%",background:isUser?`linear-gradient(135deg,${PINE},${BLUE})`:"#fff",border:isUser?"none":`1px solid ${BDR}`,borderRadius:isUser?"14px 3px 14px 14px":"3px 14px 14px 14px",padding:"11px 15px",fontSize:13.5,color:isUser?"#fff":TXT,lineHeight:1.65,boxShadow:"0 2px 8px rgba(0,0,0,.05)"}}>
+        {isUser?msg.content:renderMd(msg.content)}
+        {isStreaming&&<span className="streaming-cursor"/>}
+      </div>
+    </div>
+  );
+}
+
+function AskTab({rooms,calEvents,menu,weather,tfl}){
+  const [msgs,setMsgs]=useState([{role:"assistant",content:"Hi! I'm ACCUBOT 👋 Your Accurx HQ guide. Ask me anything — rooms, lunch, events, policies, or office info."}]);
+  const [input,setInput]=useState("");
+  const [loading,setLoading]=useState(false);
+  const bottomRef=useRef(null);
+  const inputRef=useRef(null);
+  const suggestions=useMemo(()=>getTimeAwareSuggestions(),[]);
+  useEffect(()=>{bottomRef.current?.scrollIntoView({behavior:"smooth"});},[msgs]);
+
+  const send=useCallback(async(text)=>{
+    const q=(text||input).trim();
+    if(!q||loading)return;
+    setInput("");
+    const newMsgs=[...msgs,{role:"user",content:q}];
+    setMsgs([...newMsgs,{role:"assistant",content:""}]);
+    setLoading(true);
+    try{
+      const sys=getSystemPrompt(rooms,calEvents,menu,weather,tfl);
+      const reply=await callClaude(newMsgs.map(m=>({role:m.role,content:m.content})),sys);
+      setMsgs([...newMsgs,{role:"assistant",content:reply}]);
+    }catch(e){
+      setMsgs([...newMsgs,{role:"assistant",content:"Something went wrong — please try again!"}]);
+    }
+    setLoading(false);
+  },[input,loading,msgs,rooms,calEvents,menu,weather,tfl]);
+
+  const onKey=e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();send();}};
+  const h=hr();
+
+  return(
+    <div style={{display:"flex",flexDirection:"column",height:"100%",background:"#fff",borderRadius:16,border:`1px solid ${BDR}`,overflow:"hidden"}}>
+      <div style={{background:`linear-gradient(135deg,${PINE},${BLUE})`,padding:"18px 22px",display:"flex",alignItems:"center",gap:14,flexShrink:0}}>
+        <div style={{width:42,height:42,borderRadius:11,background:"rgba(255,255,255,.15)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:19,color:"#fff"}}>✦</div>
+        <div>
+          <div style={{fontSize:16,fontWeight:700,color:"#fff"}}>Ask ACCUBOT</div>
+          <div style={{fontSize:12,color:"rgba(255,255,255,.65)",marginTop:1}}>Powered by Claude · rooms, lunch, events, policies & more</div>
+        </div>
+        <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:6,background:"rgba(255,255,255,.15)",borderRadius:99,padding:"5px 13px"}}>
+          <div className={loading?"ld":""} style={{width:6,height:6,borderRadius:"50%",background:loading?"#FFD700":"#5ee8a8"}}/>
+          <span style={{fontSize:11.5,color:"rgba(255,255,255,.85)",fontWeight:600}}>{loading?"Thinking…":"Online"}</span>
+        </div>
+      </div>
+      <div style={{flex:1,overflowY:"auto",padding:"20px 20px 0"}}>
+        {msgs.map((m,i)=><Bubble key={i} msg={m} isStreaming={loading&&i===msgs.length-1&&m.role==="assistant"}/>)}
+        {msgs.length===1&&(
+          <div style={{marginBottom:20,paddingLeft:40}}>
+            <div style={{fontSize:10.5,color:TXTL,fontWeight:700,textTransform:"uppercase",letterSpacing:".08em",marginBottom:10}}>
+              {h<12?"Good morning":"Good afternoon"} — try asking…
+            </div>
+            <div style={{display:"flex",flexWrap:"wrap",gap:7}}>
+              {suggestions.map(s=><button key={s} className="chip" onClick={()=>send(s)}>{s}</button>)}
+            </div>
+          </div>
+        )}
+        <div ref={bottomRef}/>
+      </div>
+      <div style={{padding:"14px 20px",flexShrink:0,borderTop:`1px solid ${BDR}`}}>
+        <div className="focus-ring" style={{display:"flex",gap:10,alignItems:"flex-end",background:BG,border:`1.5px solid ${BDR}`,borderRadius:12,padding:"10px 13px",transition:"border-color .15s,box-shadow .15s"}}>
+          <textarea ref={inputRef} className="ci" rows={1} placeholder="Ask anything about Accurx HQ…"
+            value={input} onChange={e=>setInput(e.target.value)} onKeyDown={onKey}
+            style={{maxHeight:100,overflowY:"auto"}} disabled={loading}/>
+          <button onClick={()=>send()} disabled={!input.trim()||loading}
+            style={{width:36,height:36,borderRadius:9,border:"none",cursor:!input.trim()||loading?"not-allowed":"pointer",
+              background:!input.trim()||loading?BDR:`linear-gradient(135deg,${PINE},${BLUE})`,
+              color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,transition:"background .15s"}}>
+            {loading?<div className="sp" style={{width:15,height:15,border:"2px solid rgba(255,255,255,.3)",borderTopColor:"#fff",borderRadius:"50%"}}/>:"↑"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── OVERVIEW TAB — rooms + lunch as hero ─────────────────────────
+function OverviewTab({rooms,calEvents,calLoaded,menu,roomsLive,onBook,setTab}){
+  const freeRooms=rooms.filter(r=>r.free);
+  const d=now();
+  const h=hr();
+  const nextEvent=(calEvents.length?calEvents:STATIC.events)[0];
+
+  return(
+    <div style={{display:"flex",flexDirection:"column",gap:16}}>
+
+      {/* Greeting bar */}
+      <div style={{background:`linear-gradient(130deg,${PINE}18,${BLUE}0A)`,border:`1px solid ${PINE}25`,borderRadius:14,padding:"16px 20px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+        <div>
+          <div style={{fontSize:22,fontWeight:700,color:PINE}}>{h<12?"Good morning":"Good afternoon"}, Accurx 👋</div>
+          <div style={{fontSize:13,color:TXTM,marginTop:3}}>{d.toLocaleDateString("en-GB",{weekday:"long",day:"numeric",month:"long"})} · Hack to the Future demo day 🏆</div>
+        </div>
+        <div style={{display:"flex",gap:20,alignItems:"center"}}>
+          <div style={{textAlign:"center"}}>
+            <div style={{fontSize:34,fontWeight:700,color:GREEN,lineHeight:1}}>{freeRooms.length}</div>
+            <div style={{fontSize:11,color:TXTM,fontWeight:600,marginTop:2}}>rooms free</div>
+          </div>
+          <div style={{textAlign:"center"}}>
+            <div style={{fontSize:34,fontWeight:700,color:BLUE,lineHeight:1}}>{calEvents.length||STATIC.events.length}</div>
+            <div style={{fontSize:11,color:TXTM,fontWeight:600,marginTop:2}}>events this month</div>
+          </div>
+          <div style={{textAlign:"center"}}>
+            <div style={{fontSize:34,fontWeight:700,color:CORAL,lineHeight:1}}>3</div>
+            <div style={{fontSize:11,color:TXTM,fontWeight:600,marginTop:2}}>new starters</div>
+          </div>
+        </div>
+      </div>
+
+      {/* HERO: Rooms + Lunch side by side */}
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+
+        {/* Free rooms panel */}
+        <div className="card">
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14}}>
+            <div className="lbl" style={{marginBottom:0}}>🏢 Meeting Rooms</div>
+            <button onClick={()=>setTab("rooms")} style={{fontSize:12,fontWeight:600,color:PINE,background:"none",border:"none",cursor:"pointer",fontFamily:FONT}}>
+              All {rooms.length} rooms →
+            </button>
+          </div>
+          <div style={{display:"flex",flexDirection:"column",gap:6}}>
+            {freeRooms.slice(0,5).map(r=>(
+              <div key={r.name} onClick={()=>onBook(r)}
+                style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 13px",background:"#F0FAF5",borderRadius:10,cursor:"pointer",border:"1.5px solid #B6E9D6",transition:"all .15s"}}
+                onMouseEnter={e=>{e.currentTarget.style.background="#E5F7F0";e.currentTarget.style.transform="translateY(-1px)";}}
+                onMouseLeave={e=>{e.currentTarget.style.background="#F0FAF5";e.currentTarget.style.transform="none";}}>
+                <div>
+                  <span style={{fontSize:13.5,fontWeight:700,color:"#166534"}}>{r.name}</span>
+                  <span style={{fontSize:11,color:TXTM,marginLeft:8}}>{r.seats} seats · {r.floor}</span>
+                </div>
+                <span style={{fontSize:12,fontWeight:700,color:PINE,background:"#E6F5F5",padding:"3px 10px",borderRadius:6}}>Book →</span>
+              </div>
+            ))}
+            {freeRooms.length>5&&(
+              <button onClick={()=>setTab("rooms")} style={{fontSize:12,color:TXTL,background:"none",border:"none",cursor:"pointer",fontFamily:FONT,padding:"4px 0",textAlign:"left"}}>
+                +{freeRooms.length-5} more free rooms
+              </button>
+            )}
+            {rooms.filter(r=>!r.free).slice(0,2).map(r=>(
+              <div key={r.name} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 13px",background:"#FFF5F5",borderRadius:10,border:"1.5px solid #FFD0C8"}}>
+                <span style={{fontSize:13,fontWeight:600,color:CORAL}}>{r.name}</span>
+                <span style={{fontSize:11,color:TXTM}}>busy until {r.until}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Lunch panel */}
+        <LunchCard menu={menu}/>
+      </div>
+
+      {/* Announcements */}
+      <div className="card">
+        <div className="lbl">📢 Announcements</div>
+        <div style={{display:"flex",flexDirection:"column",gap:8}}>
+          {STATIC.announcements.map((a,i)=>(
+            <div key={i} style={{display:"flex",gap:11,alignItems:"flex-start",padding:"10px 13px",background:BG,borderRadius:10}}>
+              <span style={{fontSize:16,flexShrink:0}}>{a.split(" ")[0]}</span>
+              <div style={{fontSize:13,color:TXTM,lineHeight:1.55}}>{a.split(" ").slice(1).join(" ")}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Next event + Events */}
+      {nextEvent&&(
+        <div className="card" style={{display:"flex",alignItems:"center",gap:12}}>
+          <div style={{width:3,alignSelf:"stretch",borderRadius:2,background:CAT[nextEvent.cat]?.c||PINE,flexShrink:0}}/>
+          <div style={{flex:1}}>
+            <div style={{fontSize:10.5,fontWeight:700,textTransform:"uppercase",letterSpacing:".08em",color:TXTL,marginBottom:4}}>Next event</div>
+            <div style={{fontSize:15,fontWeight:600,color:TXT}}>{nextEvent.title}</div>
+            <div style={{fontSize:12,color:TXTM,marginTop:3}}>{nextEvent.date} · {nextEvent.time}</div>
+          </div>
+          <span style={{fontSize:10,fontWeight:700,padding:"3px 9px",borderRadius:99,background:CAT[nextEvent.cat]?.bg,color:CAT[nextEvent.cat]?.c}}>{nextEvent.cat}</span>
+        </div>
+      )}
+      <EventsCard events={calEvents} calLoaded={calLoaded}/>
+      <PeopleCard/>
+    </div>
+  );
+}
+
+
+// ── ONBOARDING TAB ────────────────────────────────────────────────
+function OnboardingTab(){
+  const [activeDay, setActiveDay] = useState("day1");
+  const checklist = {
+    day1: {
+      label:"Day 1",
+      color:PINE,
+      items:[
+        {task:"Attend new joiner breakfast",done:false,link:null},
+        {task:"Meet your manager and get your 90-day plan",done:false,link:null},
+        {task:"Set up your laptop — IT will guide you",done:false,link:null},
+        {task:"Log into Google Workspace (Gmail, Calendar, Drive)",done:false,link:null},
+        {task:"Join Slack and set up your profile",done:false,link:null},
+        {task:"Log into Notion — your team home is there",done:false,link:"https://notion.so/accurx/73124cb825d14a3fb059a2f95d4a482d"},
+        {task:"Say hi on #general 👋",done:false,link:null},
+      ]
+    },
+    week1: {
+      label:"Week 1",
+      color:BLUE,
+      items:[
+        {task:"1:1 with your manager",done:false,link:null},
+        {task:"1:1 with your onboarding buddy",done:false,link:null},
+        {task:"Attend your first team standup",done:false,link:null},
+        {task:"Get access to your tools: Jira/Linear, Figma, Happl",done:false,link:null},
+        {task:"Read the company principles on Notion",done:false,link:"https://notion.so/accurx/1497794053d18040af10fdfd95753e72"},
+        {task:"Submit your first Donut coffee request — meet someone new!",done:false,link:null},
+        {task:"Set up your benefits on Happl",done:false,link:"https://notion.so/accurx/2857794053d180ef98e0f8f37f561e13"},
+      ]
+    },
+    month1: {
+      label:"Month 1",
+      color:CORAL,
+      items:[
+        {task:"30-day check-in with your manager",done:false,link:null},
+        {task:"Review and agree your 90-day plan",done:false,link:null},
+        {task:"Submit your first expense claim on Happl",done:false,link:"https://notion.so/accurx/66c8710927344d17b6e27f050cb1f033"},
+        {task:"Join a club or social group",done:false,link:null},
+        {task:"Attend a healthcare visit if you haven't already",done:false,link:null},
+        {task:"Complete mandatory Fire Warden training",done:false,link:"https://forms.gle/UbqdVXyMGRai6cMF9"},
+      ]
+    },
+  };
+  const [checked, setChecked] = useState({});
+  const toggle = key => setChecked(p=>({...p,[key]:!p[key]}));
+  const phase = checklist[activeDay];
+  const doneCount = phase.items.filter((_,i)=>checked[`${activeDay}-${i}`]).length;
+
+  const WHO_TO_MEET = [
+    {role:"Your manager",what:"First 1:1, 90-day plan, team intro"},
+    {role:"Your buddy",what:"Informal guide for your first month"},
+    {role:"IT team",what:"Laptop setup, tool access, #ask-it"},
+    {role:"People team",what:"HR, benefits, policies — people@accurx.com"},
+    {role:"Office team",what:"Building access, facilities — #ask-office"},
+  ];
+
+  const FAQS = [
+    {q:"What's the office address?",a:"7 Curtain Road, London EC2A 3LT. Open 24/7. Late access: 07482411422."},
+    {q:"Can I bring my dog?",a:"Yes! Dogs are welcome everywhere except the kitchen area."},
+    {q:"What's the fire alarm test?",a:"Every Friday at 3:30pm. Do NOT evacuate — it's just a test."},
+    {q:"When is payday?",a:"24th of each month."},
+    {q:"What's the dress code?",a:"Casual. Wear what you're comfortable in."},
+    {q:"How do I book a meeting room?",a:"Click any free room on the Rooms tab — it opens Google Calendar with the room pre-selected."},
+    {q:"How do I claim expenses?",a:"Via the Happl platform. See the Expenses Policy on Notion for what's claimable."},
+    {q:"Where do I find my benefits?",a:"Happl platform — you'll get an invite in your first week."},
+  ];
+
+  const [openFaq, setOpenFaq] = useState(null);
+
+  return(
+    <div style={{display:"flex",flexDirection:"column",gap:18}}>
+
+      {/* Welcome hero */}
+      <div style={{background:`linear-gradient(130deg,${PINE}18,${BLUE}0A)`,border:`1px solid ${PINE}25`,borderRadius:14,padding:"20px 24px"}}>
+        <div style={{fontSize:22,fontWeight:700,color:PINE,marginBottom:4}}>Welcome to Accurx 👋</div>
+        <div style={{fontSize:13.5,color:TXTM,lineHeight:1.6,maxWidth:600}}>
+          This guide covers everything you need for your first month. Work through it at your own pace — your buddy and manager are here to help with anything that's unclear.
+        </div>
+        <div style={{display:"flex",gap:10,marginTop:14,flexWrap:"wrap"}}>
+          <a href="https://notion.so/accurx/33e7794053d18158b760de4224f76607" target="_blank" rel="noopener"
+            style={{fontSize:13,fontWeight:600,color:PINE,background:"#fff",border:`1.5px solid ${PINE}`,borderRadius:8,padding:"7px 15px",textDecoration:"none"}}>
+            Full onboarding checklist on Notion →
+          </a>
+          <a href="https://notion.so/accurx/25d7794053d180979c2afa9f8d0ff07c" target="_blank" rel="noopener"
+            style={{fontSize:13,fontWeight:600,color:TXTM,background:"#fff",border:`1.5px solid ${BDR}`,borderRadius:8,padding:"7px 15px",textDecoration:"none"}}>
+            Office FAQs on Notion →
+          </a>
+        </div>
+      </div>
+
+      {/* Checklist */}
+      <div className="card">
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
+          <div className="lbl" style={{marginBottom:0}}>✅ Getting started checklist</div>
+          <div style={{fontSize:12,color:TXTM}}>{doneCount}/{phase.items.length} done</div>
+        </div>
+
+        {/* Phase tabs */}
+        <div className="seg" style={{marginBottom:16}}>
+          {Object.entries(checklist).map(([id,p])=>(
+            <button key={id} className={`seg-btn${activeDay===id?" on":""}`} onClick={()=>setActiveDay(id)}>
+              {p.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Progress bar */}
+        <div style={{height:5,borderRadius:99,background:BDR,overflow:"hidden",marginBottom:16}}>
+          <div style={{height:"100%",borderRadius:99,background:phase.color,width:`${Math.round(doneCount/phase.items.length*100)}%`,transition:"width .4s ease"}}/>
+        </div>
+
+        {/* Items */}
+        <div style={{display:"flex",flexDirection:"column",gap:8}}>
+          {phase.items.map((item,i)=>{
+            const key=`${activeDay}-${i}`;
+            const done=!!checked[key];
+            return(
+              <div key={i} onClick={()=>toggle(key)}
+                style={{display:"flex",alignItems:"center",gap:12,padding:"11px 14px",borderRadius:10,cursor:"pointer",background:done?"#F0FAF5":BG,border:`1.5px solid ${done?"#A3DEC7":BDR}`,transition:"all .15s"}}
+                onMouseEnter={e=>!done&&(e.currentTarget.style.borderColor=PINE)}
+                onMouseLeave={e=>!done&&(e.currentTarget.style.borderColor=BDR)}>
+                <div style={{width:20,height:20,borderRadius:"50%",border:`2px solid ${done?GREEN:BDR}`,background:done?GREEN:"#fff",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,transition:"all .15s"}}>
+                  {done&&<span style={{color:"#fff",fontSize:11,fontWeight:700}}>✓</span>}
+                </div>
+                <div style={{flex:1}}>
+                  <span style={{fontSize:13.5,fontWeight:500,color:done?TXTM:TXT,textDecoration:done?"line-through":"none"}}>{item.task}</span>
+                </div>
+                {item.link&&!done&&(
+                  <a href={item.link} target="_blank" rel="noopener" onClick={e=>e.stopPropagation()}
+                    style={{fontSize:11,fontWeight:700,color:PINE,background:"#E6F5F5",padding:"3px 9px",borderRadius:6,whiteSpace:"nowrap"}}>
+                    Open →
+                  </a>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Two-column: Who to meet + Key links */}
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+        <div className="card">
+          <div className="lbl">🤝 Who to meet first</div>
+          <div style={{display:"flex",flexDirection:"column",gap:9}}>
+            {WHO_TO_MEET.map((p,i)=>(
+              <div key={i} style={{display:"flex",gap:12,alignItems:"flex-start",padding:"10px 12px",background:BG,borderRadius:9}}>
+                <div style={{width:32,height:32,borderRadius:"50%",background:PINE,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:700,color:"#fff",flexShrink:0}}>
+                  {p.role[0]}
+                </div>
+                <div>
+                  <div style={{fontSize:13,fontWeight:600,color:TXT}}>{p.role}</div>
+                  <div style={{fontSize:11.5,color:TXTM,marginTop:2}}>{p.what}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="lbl">🔗 Key links for new joiners</div>
+          <div style={{display:"flex",flexDirection:"column",gap:8}}>
+            {[
+              {label:"Onboarding checklist",url:"https://notion.so/accurx/33e7794053d18158b760de4224f76607",emoji:"🏄"},
+              {label:"Company principles",  url:"https://notion.so/accurx/1497794053d18040af10fdfd95753e72",emoji:"⭐"},
+              {label:"Benefits & perks",    url:"https://notion.so/accurx/2857794053d180ef98e0f8f37f561e13",emoji:"🎁"},
+              {label:"Expenses policy",     url:"https://notion.so/accurx/66c8710927344d17b6e27f050cb1f033",emoji:"💷"},
+              {label:"Who is Who",          url:"https://notion.so/accurx/db8d3cc2501546f1a29d7a218ba94a4d",emoji:"👥"},
+              {label:"Office FAQs",         url:"https://notion.so/accurx/25d7794053d180979c2afa9f8d0ff07c",emoji:"🏢"},
+            ].map((l,i)=>(
+              <a key={i} href={l.url} target="_blank" rel="noopener"
+                style={{display:"flex",gap:10,alignItems:"center",padding:"9px 12px",background:BG,borderRadius:9,transition:"all .15s"}}
+                onMouseEnter={e=>{e.currentTarget.style.background="#E6F5F5";}}
+                onMouseLeave={e=>{e.currentTarget.style.background=BG;}}>
+                <span style={{fontSize:16}}>{l.emoji}</span>
+                <span style={{fontSize:13,fontWeight:500,color:TXT}}>{l.label}</span>
+                <span style={{marginLeft:"auto",fontSize:11,color:PINE}}>→</span>
+              </a>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Office FAQs accordion */}
+      <div className="card">
+        <div className="lbl">❓ Common questions</div>
+        <div style={{display:"flex",flexDirection:"column",gap:6}}>
+          {FAQS.map((faq,i)=>(
+            <div key={i} style={{borderRadius:10,border:`1.5px solid ${openFaq===i?PINE:BDR}`,overflow:"hidden",transition:"border-color .15s"}}>
+              <div onClick={()=>setOpenFaq(openFaq===i?null:i)}
+                style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"12px 14px",cursor:"pointer",background:openFaq===i?"#F0FAF5":"#fff"}}>
+                <span style={{fontSize:13.5,fontWeight:600,color:TXT}}>{faq.q}</span>
+                <span style={{fontSize:18,color:PINE,fontWeight:300,transition:"transform .15s",transform:openFaq===i?"rotate(45deg)":"none"}}>+</span>
+              </div>
+              {openFaq===i&&(
+                <div style={{padding:"0 14px 12px",fontSize:13,color:TXTM,lineHeight:1.6,background:"#F0FAF5"}}>
+                  {faq.a}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+
+    </div>
+  );
+}
+
+function RoomsTab({rooms,roomsLive,onBook}){
+  const [filter,setFilter]=useState("all");
+  const freeCount=rooms.filter(r=>r.free).length;
+  return(
+    <div style={{display:"flex",flexDirection:"column",gap:16}}>
+      <div style={{display:"flex",alignItems:"center",gap:10}}>
+        <div className="seg" style={{width:"auto",display:"inline-flex"}}>
+          <button className={`seg-btn${filter==="all"?" on":""}`} onClick={()=>setFilter("all")} style={{padding:"8px 20px"}}>All rooms</button>
+          <button className={`seg-btn${filter==="free"?" on":""}`} onClick={()=>setFilter("free")} style={{padding:"8px 20px"}}>
+            Free now&nbsp;<span style={{background:filter==="free"?"#E6F5F5":BDR,color:filter==="free"?PINE:TXTM,borderRadius:99,padding:"1px 7px",fontSize:11,fontWeight:700}}>{freeCount}</span>
+          </button>
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:10,marginLeft:"auto"}}>
+          <span style={{display:"inline-flex",alignItems:"center",gap:5,fontSize:10,fontWeight:700,padding:"3px 9px",borderRadius:99,background:roomsLive?"#E6F5F5":"#FFF8E6",color:roomsLive?PINE:AMBER}}>
+            <span style={{width:5,height:5,borderRadius:"50%",background:roomsLive?PINE:AMBER,display:"inline-block"}}/>
+            {roomsLive?"Live · GCal":"Static — awaiting service account"}
+          </span>
+          <span style={{fontSize:12,color:TXTM}}>Click any free room to book</span>
+        </div>
+      </div>
+      <div className="card">
+        <RoomsGrid rooms={rooms} onBook={onBook} freeOnly={filter==="free"}/>
+      </div>
+    </div>
+  );
+}
+
+// ── SIDEBAR ───────────────────────────────────────────────────────
+const TABS=[
+  {id:"overview",   icon:"⬡", label:"Overview"},
+  {id:"rooms",      icon:"🏢",label:"Rooms"},
+  {id:"events",     icon:"📅",label:"Events"},
+  {id:"lunch",      icon:"🍽️",label:"Lunch"},
+  {id:"people",     icon:"👥",label:"People"},
+  {id:"onboarding", icon:"🏄",label:"Onboarding"},
+  {id:"links",      icon:"🔗",label:"Quick Links"},
+  {id:"ask",        icon:"✦", label:"Ask ACCUBOT"},
+];
+
+function Sidebar({active,setActive,lastUpdated,calLoaded,roomsLive,lunchLive}){
+  return(
+    <div style={{width:196,flexShrink:0,background:"#fff",borderRight:`1px solid ${BDR}`,display:"flex",flexDirection:"column",padding:"18px 10px",gap:2,height:"100%",overflowY:"auto"}}>
+      <div style={{display:"flex",alignItems:"center",gap:9,padding:"2px 5px 18px"}}>
+        <Logo size={32}/>
+        <div>
+          <div style={{fontSize:14.5,fontWeight:700,color:PINE,letterSpacing:"-0.01em"}}>ACCUBOT</div>
+          <div style={{fontSize:9.5,color:TXTL,marginTop:1}}>Accurx Workplace</div>
+        </div>
+      </div>
+      {TABS.map(t=>(
+        <div key={t.id} className={`nav${active===t.id?" on":""}`} onClick={()=>setActive(t.id)}
+          style={t.id==="ask"?{marginTop:5,background:active==="ask"?"#E6F5F5":"linear-gradient(135deg,#0B888815,#5757DD0E)",border:`1px solid ${active==="ask"?PINE:"#0B888830"}`,color:PINE}:{}}>
+          <span style={{fontSize:t.id==="ask"?12:14}}>{t.icon}</span>
+          <span style={t.id==="ask"?{fontWeight:700}:{}}>{t.label}</span>
+          {t.id==="ask"&&<span style={{marginLeft:"auto",fontSize:8.5,fontWeight:700,padding:"2px 6px",borderRadius:99,background:PINE,color:"#fff"}}>AI</span>}
+        </div>
+      ))}
+      <div style={{flex:1}}/>
+      <div style={{display:"flex",flexDirection:"column",gap:5,marginBottom:5}}>
+        {[
+          {label:"Calendar", live:calLoaded},
+          {label:"Rooms",    live:roomsLive},
+          {label:"Lunch",    live:lunchLive},
+        ].map(s=>(
+          <div key={s.label} style={{padding:"7px 10px",background:s.live?"#F0FAF5":"#FFF8E6",borderRadius:8,display:"flex",alignItems:"center",gap:6}}>
+            <div className={s.live?"":"ld"} style={{width:6,height:6,borderRadius:"50%",background:s.live?GREEN:AMBER,flexShrink:0}}/>
+            <div style={{fontSize:10.5,color:s.live?GREEN:AMBER,fontWeight:700}}>{s.label}: {s.live?"live":"pending"}</div>
+          </div>
+        ))}
+      </div>
+      {lastUpdated&&(
+        <div style={{padding:"8px 6px",borderTop:`1px solid ${BDR}`}}>
+          <div style={{fontSize:9.5,color:TXTL,lineHeight:1.8}}>Refreshed<br/><span style={{color:TXTM,fontWeight:600}}>{lastUpdated.toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})}</span></div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── REFRESH BUTTON — shows spinner while fetching ────────────────
+function RefreshButton({refetch}){
+  const [busy,setBusy]=useState(false);
+  const go=async()=>{
+    if(busy)return;
+    setBusy(true);
+    await refetch(true);
+    setBusy(false);
+  };
+  return(
+    <button onClick={go} disabled={busy}
+      style={{display:"flex",alignItems:"center",gap:5,background:BG,border:`1px solid ${BDR}`,borderRadius:8,padding:"6px 12px",fontSize:12,fontWeight:600,color:busy?PINE:TXTM,cursor:busy?"default":"pointer",fontFamily:FONT,transition:"all .15s",opacity:busy?.7:1}}
+      onMouseEnter={e=>{if(!busy){e.currentTarget.style.borderColor=PINE;e.currentTarget.style.color=PINE;}}}
+      onMouseLeave={e=>{if(!busy){e.currentTarget.style.borderColor=BDR;e.currentTarget.style.color=TXTM;}}}>
+      {busy
+        ?<><div className="sp" style={{width:11,height:11,border:"2px solid #E4E8EC",borderTopColor:PINE,borderRadius:"50%"}}/> Refreshing…</>
+        :"↻ Refresh"}
+    </button>
+  );
+}
+
+// ── APP ───────────────────────────────────────────────────────────
+function App(){
+  const [tab,setTab]=useState("overview");
+  const [bookingRoom,setBookingRoom]=useState(null);
+  const [notif,setNotif]=useState(false);
+  const {calEvents,calLoaded,rooms,roomsLive,menu,weather,tfl,lastUpdated,refetch}=useLiveData();
+
+  const titles={overview:"Overview",rooms:"Meeting Rooms",events:"Events",lunch:"Today's Lunch",people:"People",onboarding:"New Joiner Guide",links:"Quick Links",ask:"Ask ACCUBOT"};
+
+  const renderTab=()=>{
+    switch(tab){
+      case"overview":   return<OverviewTab rooms={rooms} calEvents={calEvents} calLoaded={calLoaded} menu={menu} roomsLive={roomsLive} onBook={setBookingRoom} setTab={setTab}/>;
+      case"rooms":      return<RoomsTab rooms={rooms} roomsLive={roomsLive} onBook={setBookingRoom}/>;
+      case"events":     return<EventsCard events={calEvents} calLoaded={calLoaded}/>;
+      case"lunch":      return<LunchCard menu={menu}/>;
+      case"people":     return<PeopleCard/>;
+      case"onboarding": return<OnboardingTab/>;
+      case"links":      return<QuickLinksCard/>;
+      case"ask":        return<AskTab rooms={rooms} calEvents={calEvents} menu={menu} weather={weather} tfl={tfl}/>;
+      default:       return null;
+    }
+  };
+
+  return(
+    <>
+      <style>{STYLE}</style>
+      {bookingRoom&&<BookingModal room={bookingRoom} onClose={()=>setBookingRoom(null)}/>}
+      <div style={{display:"flex",height:"100vh",overflow:"hidden",fontFamily:FONT}}>
+        <Sidebar active={tab} setActive={setTab} lastUpdated={lastUpdated} calLoaded={calLoaded} roomsLive={roomsLive} lunchLive={menu?.live}/>
+        <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
+          <div style={{background:"#fff",borderBottom:`1px solid ${BDR}`,padding:"0 22px",display:"flex",alignItems:"center",justifyContent:"space-between",height:56,flexShrink:0}}>
+            <div style={{display:"flex",alignItems:"center",gap:9}}>
+              {tab==="ask"&&<div style={{width:27,height:27,borderRadius:7,background:`linear-gradient(135deg,${PINE},${BLUE})`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,color:"#fff",fontWeight:700}}>✦</div>}
+              <span style={{fontSize:17,fontWeight:700,color:TXT}}>{titles[tab]}</span>
+              {tab==="ask"&&<span style={{fontSize:10,fontWeight:700,padding:"3px 9px",borderRadius:99,background:"#E6F5F5",color:PINE}}>Powered by Claude</span>}
+            </div>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <RefreshButton refetch={refetch}/>
+              {tab!=="ask"&&(
+                <button onClick={()=>setTab("ask")} style={{display:"flex",alignItems:"center",gap:6,background:`linear-gradient(135deg,${PINE}15,${BLUE}10)`,border:`1px solid ${PINE}30`,borderRadius:8,padding:"6px 14px",fontSize:13,fontWeight:600,color:PINE,cursor:"pointer",fontFamily:FONT}}>
+                  ✦ Ask ACCUBOT
+                </button>
+              )}
+              <div style={{position:"relative"}}>
+                <div onClick={()=>setNotif(o=>!o)} style={{width:34,height:34,borderRadius:8,background:notif?"#E6F5F5":BG,border:`1px solid ${notif?PINE:BDR}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:15,cursor:"pointer",position:"relative",transition:"all .15s"}}>
+                  🔔<div style={{position:"absolute",top:7,right:7,width:6,height:6,borderRadius:"50%",background:CORAL,border:"2px solid #fff"}}/>
+                </div>
+                {notif&&(
+                  <div className="slide-in" style={{position:"absolute",top:42,right:0,width:305,background:"#fff",border:`1px solid ${BDR}`,borderRadius:13,boxShadow:"0 8px 36px rgba(0,0,0,.13)",zIndex:100,overflow:"hidden"}}>
+                    <div style={{padding:"12px 15px",borderBottom:`1px solid ${BDR}`,fontSize:13.5,fontWeight:700,color:TXT}}>Announcements</div>
+                    {STATIC.announcements.map((a,i)=>(
+                      <div key={i} style={{padding:"11px 15px",borderBottom:i<STATIC.announcements.length-1?`1px solid ${BDR}`:"none",fontSize:12.5,color:TXTM,lineHeight:1.6}}>{a}</div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+          <WeatherTflBar weather={weather} tfl={tfl}/>
+          <Ticker announcements={STATIC.announcements}/>
+          <div style={{flex:1,overflowY:tab==="ask"?"hidden":"auto",padding:tab==="ask"?"16px 22px":"20px 22px",display:tab==="ask"?"flex":"block",flexDirection:"column"}}
+            onClick={()=>notif&&setNotif(false)}>
+            {renderTab()}
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
