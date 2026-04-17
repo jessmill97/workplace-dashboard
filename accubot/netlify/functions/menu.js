@@ -1,128 +1,127 @@
 // netlify/functions/menu.js
-// Reads this week's lunch menu from a Google Sheet.
-// The sheet is populated automatically by a Zapier zap:
-//   Trigger: New message in Slack #food (filter: posted by kitchen team on Fridays)
-//   Action: Formatter → parse menu text → Google Sheets append rows
 //
-// GOOGLE SHEET FORMAT (one row per menu item):
-//   Column A: Date       — dd/mm/yyyy  e.g. 17/04/2026
-//   Column B: Emoji      — 🥗
-//   Column C: Item name  — Mixed grain salad
-//   Column D: Tags       — Vegan, GF   (comma-separated)
+// LOGIC:
+// - The sheet has one row per week, written by Zapier when the kitchen posts in #food on Friday
+// - Before 2pm Friday: show THIS week's menu (current rows)
+// - From 2pm Friday onwards: show NEXT week's menu (the new row just posted)
+// - Every other day: show the most recent row in the sheet
+//   If no row found, fall back to the static demo menu in the dashboard
 //
-// REQUIRED ENV VAR:
-//   MENU_SHEET_ID — the Google Sheet ID (from the URL)
-//   Sheet must be shared publicly as "Anyone with the link can view"
-//   No API key needed for public sheets.
+// GOOGLE SHEET FORMAT (two columns, header row + one row per week):
+//   Column A: Date      — the Monday of that week, dd/mm/yyyy  e.g. 21/04/2026
+//   Column B: Raw Menu  — full text of the Slack message
 //
-// ZAPIER ZAP SETUP:
-//   1. Trigger: Slack → New Message Posted to Channel → #food
-//   2. Filter: Only continue if sender is kitchen bot/team AND day is Friday
-//   3. Action: Formatter → Text → Extract patterns OR just pass raw text
-//   4. Action: Code by Zapier (JS) → parse menu lines into structured rows
-//   5. Action: Google Sheets → Create Spreadsheet Row (one per menu item)
-//
-// ALTERNATIVE (simpler Zapier):
-//   Skip parsing in Zapier — just write the raw message to a single cell.
-//   Then in this function, call Claude to parse it into JSON.
-//   Set MENU_RAW_MODE=true to use this approach.
+// REQUIRED ENV VARS:
+//   MENU_SHEET_ID      — Google Sheet ID from the URL
+//   ANTHROPIC_API_KEY  — used to parse raw menu text into structured items
 
 export default async (req, context) => {
   const headers = {
     "Content-Type": "application/json",
     "Access-Control-Allow-Origin": "*",
-    "Cache-Control": "s-maxage=300", // cache for 5 minutes
+    "Cache-Control": "s-maxage=300",
   };
 
   try {
-    const sheetId  = process.env.MENU_SHEET_ID;
-    const rawMode  = process.env.MENU_RAW_MODE === "true";
-    const apiKey   = process.env.ANTHROPIC_API_KEY;
+    const sheetId = process.env.MENU_SHEET_ID;
+    const apiKey  = process.env.ANTHROPIC_API_KEY;
 
     if (!sheetId) {
-      return new Response(JSON.stringify({ items: null, live: false, reason: "not_configured" }), { headers });
+      return new Response(
+        JSON.stringify({ items: null, live: false, reason: "not_configured" }),
+        { headers }
+      );
     }
 
-    // Fetch the Google Sheet as CSV (works for any publicly shared sheet)
-    const csvUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=0`;
+    // Work out London time
+    const londonNow  = new Date(new Date().toLocaleString("en-US", { timeZone: "Europe/London" }));
+    const dayOfWeek  = londonNow.getDay();   // 0=Sun, 1=Mon … 5=Fri, 6=Sat
+    const hourLondon = londonNow.getHours(); // 0–23
+
+    // Friday at or after 14:00 London time = show next week's menu
+    const showNextWeek = (dayOfWeek === 5 && hourLondon >= 14);
+
+    // Fetch the sheet as CSV
+    const csvUrl  = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=0`;
     const csvResp = await fetch(csvUrl);
     if (!csvResp.ok) throw new Error(`Sheet fetch ${csvResp.status}`);
     const csv = await csvResp.text();
 
-    if (rawMode && apiKey) {
-      // ── RAW MODE: Zapier writes the whole Slack message as one cell ──
-      // Pass the raw text to Claude to extract structured menu items
-      const rawText = csv.trim().split("\n").slice(-1)[0]; // last row = most recent post
+    // Parse all rows, skip header
+    const allRows = csv.trim().split("\n").slice(1).map(row => {
+      const cols = [];
+      let cur = "", inQ = false;
+      for (const ch of row + ",") {
+        if (ch === '"') { inQ = !inQ; continue; }
+        if (ch === "," && !inQ) { cols.push(cur.trim()); cur = ""; continue; }
+        cur += ch;
+      }
+      return cols;
+    }).filter(c => c[0] && c[1]);
 
-      const claudeResp = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": apiKey,
-          "anthropic-version": "2023-06-01",
-        },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 500,
-          system: `You extract lunch menu items from a Slack message posted by a kitchen team.
+    if (allRows.length === 0) {
+      return new Response(JSON.stringify({ items: null, live: false, reason: "sheet_empty" }), { headers });
+    }
+
+    // showNextWeek = true  → use the LAST row (most recently posted = next week)
+    // showNextWeek = false → use the SECOND-TO-LAST row if it exists, else last row
+    let chosenRow;
+    if (showNextWeek || allRows.length === 1) {
+      chosenRow = allRows[allRows.length - 1];
+    } else {
+      chosenRow = allRows[allRows.length - 2];
+    }
+
+    const rawMenuText = chosenRow[1];
+    const rowDate     = chosenRow[0];
+
+    if (!apiKey) {
+      return new Response(JSON.stringify({ items: null, live: false, reason: "no_api_key" }), { headers });
+    }
+
+    // Ask Claude to parse the raw Slack message into structured menu items
+    const claudeResp = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model:      "claude-sonnet-4-20250514",
+        max_tokens: 600,
+        system: `You extract lunch menu items from a message posted by a kitchen team.
 Return ONLY valid JSON, no markdown:
 {"items":[{"e":"emoji","name":"item name","tags":["Vegan","GF","Fish","Dairy","Gluten","Halal","Nuts"]}]}
 Rules:
-- Pick a relevant emoji for each dish
-- Tags: only include relevant dietary tags from the list above
-- If a dish has no special dietary requirements, use an empty tags array
-- Clean up typos in dish names
-- If no menu items found, return {"items":[]}`,
-          messages: [{ role: "user", content: `Extract menu items from this message:\n\n${rawText}` }],
-        }),
-      });
+- Pick a fitting food emoji for each dish
+- Only include dietary tags that actually apply — if nothing special, use []
+- Fix obvious typos in dish names
+- Ignore day labels like "Monday:" or "Thursday" — just extract the dishes
+- If the message lists menus for multiple days, return ALL dishes from ALL days combined
+- If no food items found, return {"items":[]}`,
+        messages: [{ role: "user", content: `Extract all menu items:\n\n${rawMenuText}` }],
+      }),
+    });
 
-      const claudeData = await claudeResp.json();
-      const text = claudeData.content?.[0]?.text || "{}";
-      try {
-        const parsed = JSON.parse(text.replace(/```json|```/g, "").trim());
-        if (parsed.items?.length) {
-          return new Response(JSON.stringify({ items: parsed.items, live: true, source: "slack_raw" }), { headers });
-        }
-      } catch(e) {}
+    const claudeData = await claudeResp.json();
+    const rawText    = claudeData.content?.[0]?.text || "{}";
 
-      return new Response(JSON.stringify({ items: null, live: false, reason: "parse_failed" }), { headers });
-    }
+    try {
+      const parsed = JSON.parse(rawText.replace(/```json|```/g, "").trim());
+      if (parsed.items?.length) {
+        return new Response(
+          JSON.stringify({ items: parsed.items, live: true, source: "slack", rowDate, nextWeek: showNextWeek }),
+          { headers }
+        );
+      }
+    } catch(e) {}
 
-    // ── STRUCTURED MODE: Zapier writes one row per item with date/emoji/name/tags ──
-    const today = new Date().toLocaleDateString("en-GB"); // "17/04/2026"
-    const rows  = csv.trim().split("\n").slice(1); // skip header
-
-    const todayItems = rows
-      .map(row => {
-        // Handle quoted CSV fields properly
-        const cols = [];
-        let current = "", inQuotes = false;
-        for (const ch of row + ",") {
-          if (ch === '"') { inQuotes = !inQuotes; continue; }
-          if (ch === "," && !inQuotes) { cols.push(current.trim()); current = ""; continue; }
-          current += ch;
-        }
-        return cols;
-      })
-      .filter(cols => cols[0] === today && cols[2])
-      .map(cols => ({
-        e:    cols[1] || "🍽️",
-        name: cols[2],
-        tags: (cols[3] || "").split(",").map(t => t.trim()).filter(Boolean),
-      }));
-
-    if (todayItems.length === 0) {
-      return new Response(JSON.stringify({ items: null, live: false, reason: "no_menu_today" }), { headers });
-    }
-
-    return new Response(JSON.stringify({ items: todayItems, live: true, source: "sheet" }), { headers });
+    return new Response(JSON.stringify({ items: null, live: false, reason: "parse_failed" }), { headers });
 
   } catch (err) {
-    console.error("menu.js error:", err);
-    return new Response(JSON.stringify({ items: null, live: false, error: err.message }), {
-      status: 500, headers,
-    });
+    console.error("menu.js error:", err.message);
+    return new Response(JSON.stringify({ items: null, live: false, error: err.message }), { status: 500, headers });
   }
 };
 
